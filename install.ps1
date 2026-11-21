@@ -92,9 +92,9 @@ New-Item -ItemType Directory -Force -Path $globalSaveDir | Out-Null
 
 # ---- 1. Prepare ExeFS & RomFS (supports both .nup and extracted folder) ----
 $workRoot = Join-Path $Dir "work"
-$exefsDir = Join-Path $workRoot "game\exefs"
-$romfsDir = Join-Path $workRoot "game\romfs"
-New-Item -ItemType Directory -Force -Path $exefsDir, $romfsDir | Out-Null
+$exefsDir = Join-Path $Dir "exefs"
+$romfsDir = Join-Path $Dir "romfs"
+New-Item -ItemType Directory -Force -Path $workRoot, $exefsDir, $romfsDir | Out-Null
 
 if (-not (Test-Path -LiteralPath (Join-Path $exefsDir "main")) -or -not (Test-Path -LiteralPath (Join-Path $romfsDir "index.json"))) {
     if (Test-Path -LiteralPath $Nup -PathType Container) {
@@ -139,7 +139,8 @@ idx.write_text(json.dumps(d), encoding='utf-8')
 
 # ---- 2. Lift ARM64 ExeFS (main, subsdk0, sdk) to C ----
 $genDir = Join-Path $workRoot "generated\hwaoi196608"
-if (-not (Test-Path -LiteralPath (Join-Path $genDir "hwaoi-generation.json"))) {
+$hwaoiExe = Join-Path $Dir "hwaoi.exe"
+if (-not (Test-Path -LiteralPath $hwaoiExe) -and -not (Test-Path -LiteralPath (Join-Path $genDir "hwaoi-generation.json"))) {
     Say "lifting ARM64 code (main, subsdk0, sdk) to C..."
     Push-Location $source
     & $pyExe (Join-Path $source "tools\hwaoi.py") --exefs $exefsDir generate --out $genDir --limit 0 --jobs $jobs --display-settings
@@ -150,7 +151,6 @@ if (-not (Test-Path -LiteralPath (Join-Path $genDir "hwaoi-generation.json"))) {
 
 # ---- 3. Compile native Windows executable (hwaoi.exe) ----
 $buildDir = Join-Path $workRoot "build\hwaoi196608"
-$hwaoiExe = Join-Path $Dir "hwaoi.exe"
 $iconSrc = if ($IconPath -and (Test-Path -LiteralPath $IconPath)) { $IconPath } else { Join-Path $source "game_icon.ico" }
 if (-not (Test-Path -LiteralPath $hwaoiExe)) {
     Say "compiling hwaoi.exe with Clang64 + Ninja..."
@@ -177,9 +177,6 @@ if (-not (Test-Path -LiteralPath $hwaoiExe)) {
     if (Test-Path -LiteralPath (Join-Path $buildDir "romfs-index.bin")) {
         Copy-Item -LiteralPath (Join-Path $buildDir "romfs-index.bin") -Destination (Join-Path $Dir "romfs-index.bin") -Force
     }
-    $finalRomfs = Join-Path $Dir "romfs"
-    if (Test-Path -LiteralPath $finalRomfs) { Remove-Item -Recurse -Force $finalRomfs }
-    Move-Item -LiteralPath $romfsDir -Destination $finalRomfs -Force
 }
 
 foreach ($dll in @("SDL3.dll", "libiconv-2.dll", "libopus-0.dll")) {
@@ -213,7 +210,7 @@ if (Test-Path -LiteralPath $tplPath) {
     $tpl = Get-Content -LiteralPath $tplPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $tpl | Add-Member -NotePropertyName "working_dir" -NotePropertyValue $Dir -Force
     $tpl | Add-Member -NotePropertyName "rom_path" -NotePropertyValue $Nup -Force
-    $tpl | Add-Member -NotePropertyName "command" -NotePropertyValue @($hwaoiExe, "--play-experimental") -Force
+    $tpl | Add-Member -NotePropertyName "command" -NotePropertyValue @($hwaoiExe, "--exefs", $exefsDir, "--romfs", $romfsDir, "--profile", $globalSaveDir, "--play-experimental") -Force
     if (-not $tpl.env) {
         $tpl | Add-Member -NotePropertyName "env" -NotePropertyValue ([pscustomobject]@{}) -Force
     }
@@ -243,7 +240,7 @@ set "TOTK_PROFILE_DIR=$globalSaveDir"
 set "TOTK_FULLSCREEN=0"
 set "TOTK_WINDOW_MODE=windowed"
 set "TOTK_WINDOW_SIZE=1280x720"
-"$hwaoiExe" --play-experimental %*
+"$hwaoiExe" --exefs "$exefsDir" --romfs "$romfsDir" --profile "$globalSaveDir" --play-experimental %*
 "@ | Set-Content -Encoding ASCII $runner
 }
 

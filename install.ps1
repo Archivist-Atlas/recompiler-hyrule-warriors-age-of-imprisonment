@@ -308,8 +308,8 @@ $startMenuDir = Join-Path ([Environment]::GetFolderPath("Programs")) $safeShortc
 $uninstScript = @"
 Add-Type -AssemblyName System.Windows.Forms
 `$res = [System.Windows.Forms.MessageBox]::Show(
-    "Voulez-vous désinstaller $safeShortcutName ?`n`nLe dossier d'installation et les raccourcis seront supprimés.`nVotre fichier ROM (.nup) et vos sauvegardes ne seront PAS supprimés.",
-    "Désinstaller $safeShortcutName",
+    "Voulez-vous d`$([char]0x00E9)sinstaller $safeShortcutName ?`n`nLe dossier d'installation et les raccourcis seront supprim`$([char]0x00E9)s.`nVotre fichier ROM (.nup) et vos sauvegardes ne seront PAS supprim`$([char]0x00E9)s.",
+    "D`$([char]0x00E9)sinstaller $safeShortcutName",
     [System.Windows.Forms.MessageBoxButtons]::YesNo,
     [System.Windows.Forms.MessageBoxIcon]::Question
 )

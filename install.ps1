@@ -179,14 +179,37 @@ if (-not (Test-Path -LiteralPath $hwaoiExe)) {
     }
 }
 
-foreach ($dll in @("SDL3.dll", "libiconv-2.dll", "libopus-0.dll")) {
+foreach ($dll in @("SDL3.dll", "libiconv-2.dll", "libopus-0.dll", "zlib1.dll", "libwinpthread-1.dll", "libc++.dll", "libunwind.dll")) {
     $dllSrc = Join-Path $clang64Bin $dll
     if (Test-Path -LiteralPath $dllSrc) {
         Copy-Item -LiteralPath $dllSrc -Destination (Join-Path $Dir $dll) -Force
     }
 }
-Copy-Item -LiteralPath $xlateExe -Destination (Join-Path $Dir "totk_xlate.exe") -Force
-Copy-Item -LiteralPath $xlateId -Destination (Join-Path $Dir "totk_xlate.id") -Force
+
+# ---- 3b. Ensure complete HWAoI shader translator (totk_xlate.exe + .NET runtime DLLs) ----
+$translatorCache = Join-Path $env:LOCALAPPDATA "Switch2Recomp\_cache\hwaoi_translator"
+$translatorDst = Join-Path $Dir "translator"
+if (-not (Test-Path -LiteralPath (Join-Path $translatorCache "totk_xlate.dll")) -and -not (Test-Path -LiteralPath (Join-Path $translatorCache "coreclr.dll"))) {
+    Say "downloading HWAoI shader translator bundle (v0.1.0-alpha.7)..."
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    New-Item -ItemType Directory -Force -Path $translatorCache | Out-Null
+    $tmpZip = Join-Path $env:TEMP "HWAoI-Compiler-Windows-x64.zip"
+    Invoke-WebRequest -Uri "https://github.com/Alano6678/hwaoi-recomp/releases/download/v0.1.0-alpha.7/HWAoI-Compiler-Windows-x64.zip" -OutFile $tmpZip -UseBasicParsing
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($tmpZip)
+    foreach ($entry in $zip.Entries) {
+        if ($entry.FullName -match 'translator/(.+)$' -and $entry.Name) {
+            $outFile = Join-Path $translatorCache $Matches[1]
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $outFile) | Out-Null
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $outFile, $true)
+        }
+    }
+    $zip.Dispose()
+    Remove-Item -LiteralPath $tmpZip -Force -ErrorAction SilentlyContinue
+}
+if (Test-Path -LiteralPath $translatorDst) { Remove-Item -Recurse -Force $translatorDst }
+Copy-Item -LiteralPath $translatorCache -Destination $translatorDst -Recurse -Force
+$xlateRuntimeExe = Join-Path $translatorDst "totk_xlate.exe"
+$zlibDst = Join-Path $Dir "zlib1.dll"
 
 # ---- 4. Pre-launch UI, config, shortcuts & Windows uninstaller ----
 $repoRoot = Resolve-Path (Join-Path $source "..\..\..")
@@ -215,6 +238,11 @@ if (Test-Path -LiteralPath $tplPath) {
         $tpl | Add-Member -NotePropertyName "env" -NotePropertyValue ([pscustomobject]@{}) -Force
     }
     $tpl.env | Add-Member -NotePropertyName "TOTK_PROFILE_DIR" -NotePropertyValue $globalSaveDir -Force
+    $tpl.env | Add-Member -NotePropertyName "HWAOI_PROFILE_DIR" -NotePropertyValue $globalSaveDir -Force
+    $tpl.env | Add-Member -NotePropertyName "HWAOI_XLATE" -NotePropertyValue $xlateRuntimeExe -Force
+    if (Test-Path -LiteralPath $zlibDst) {
+        $tpl.env | Add-Member -NotePropertyName "HWAOI_ZLIB_DLL" -NotePropertyValue $zlibDst -Force
+    }
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($launchConfigPath, ($tpl | ConvertTo-Json -Depth 10), $utf8NoBom)
 }

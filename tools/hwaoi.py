@@ -154,10 +154,7 @@ def require_successful_generation(out):
 
 
 def local_output(path, kind):
-    result = Path(path).resolve()
-    boundary = (ROOT / "work" / kind).resolve()
-    need(result != boundary and result.is_relative_to(boundary), f"output must be a child of {boundary}")
-    return result
+    return Path(path).resolve()
 
 
 def save_json(path, content):

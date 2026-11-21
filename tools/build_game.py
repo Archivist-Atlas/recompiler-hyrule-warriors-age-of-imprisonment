@@ -798,7 +798,14 @@ def main():
         WINDRES = TOOLCHAIN_BIN / 'llvm-windres.exe'
     if args.toolchain and WIN or args.deps and (args.toolchain or not WIN):   # Linux: --deps only, never deps-mingw
         DEPS = (args.deps or DEFAULT_DEPS).resolve()
-        dlls = sorted((DEPS / 'bin').glob('*.dll')) if WIN else []
+        if WIN:
+            cand_dlls = sorted((DEPS / 'bin').glob('*.dll'))
+            if len(cand_dlls) > 20:
+                dlls = [DEPS / 'bin' / n for n in ('SDL3.dll', 'libiconv-2.dll', 'libopus-0.dll', 'zlib1.dll', 'libwinpthread-1.dll', 'libc++.dll', 'libunwind.dll') if (DEPS / 'bin' / n).is_file()]
+            else:
+                dlls = cand_dlls
+        else:
+            dlls = []
     if DEPS and not WIN:
         # A release (--deps): Opus, libvpx and zstd go into the executable, so it needs no more than libc, Vulkan and
         # the libSDL3.so.0 beside it

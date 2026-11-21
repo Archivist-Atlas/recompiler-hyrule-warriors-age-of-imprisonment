@@ -213,7 +213,7 @@ if (Test-Path -LiteralPath $tplPath) {
     $tpl = Get-Content -LiteralPath $tplPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $tpl | Add-Member -NotePropertyName "working_dir" -NotePropertyValue $Dir -Force
     $tpl | Add-Member -NotePropertyName "rom_path" -NotePropertyValue $Nup -Force
-    $tpl | Add-Member -NotePropertyName "command" -NotePropertyValue @($hwaoiExe) -Force
+    $tpl | Add-Member -NotePropertyName "command" -NotePropertyValue @($hwaoiExe, "--play-experimental") -Force
     if (-not $tpl.env) {
         $tpl | Add-Member -NotePropertyName "env" -NotePropertyValue ([pscustomobject]@{}) -Force
     }
@@ -243,7 +243,7 @@ set "TOTK_PROFILE_DIR=$globalSaveDir"
 set "TOTK_FULLSCREEN=0"
 set "TOTK_WINDOW_MODE=windowed"
 set "TOTK_WINDOW_SIZE=1280x720"
-"$hwaoiExe" %*
+"$hwaoiExe" --play-experimental %*
 "@ | Set-Content -Encoding ASCII $runner
 }
 

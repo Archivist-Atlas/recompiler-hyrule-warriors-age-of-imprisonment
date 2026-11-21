@@ -6,7 +6,8 @@
   "rom_env_var": "HWAOI_RECOMP_NUP",
   "working_dir": ".",
   "command": [
-    "hwaoi.exe"
+    "hwaoi.exe",
+    "--play-experimental"
   ],
   "options": [
     {
@@ -53,7 +54,10 @@
   "env": {
     "TOTK_FULLSCREEN": "0",
     "TOTK_WINDOW_MODE": "windowed",
-    "TOTK_WINDOW_SIZE": "1280x720"
+    "TOTK_WINDOW_SIZE": "1280x720",
+    "HWAOI_PIPE_SYNC": "0",
+    "HWAOI_PIPE_SKIP": "strict",
+    "HWAOI_PIPE_PREBUILD": "1"
   },
   "expected_title_ids": [
     "04003F40232DE000",

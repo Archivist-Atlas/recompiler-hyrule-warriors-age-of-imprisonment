@@ -117,20 +117,23 @@ if (-not (Test-Path -LiteralPath (Join-Path $exefsDir "main")) -or -not (Test-Pa
         Say "extracting ExeFS and packing RomFS from .nup..."
         $extractTmp = Join-Path $Dir "_extract_tmp"
         if (Test-Path -LiteralPath $extractTmp) { Remove-Item -Recurse -Force $extractTmp }
-        New-Item -ItemType Directory -Force -Path $extractTmp | Out-Null
-        $env:PYTHONPATH = Join-Path $source "tools"
-        & $pyExe -m nup.cli extract $Nup $extractTmp
-        if ($LASTEXITCODE -ne 0) { Say "nup extract failed"; exit 1 }
-        $foundExefs = Get-ChildItem -LiteralPath $extractTmp -Recurse -Directory -Filter "exefs" | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "main") } | Select-Object -First 1
-        $foundRomfs = Get-ChildItem -LiteralPath $extractTmp -Recurse -Directory -Filter "romfs" | Select-Object -First 1
-        if (-not $foundExefs -or -not $foundRomfs) {
-            Say "error: exefs or romfs not found after extracting .nup"; exit 1
-        }
+        & $pyExe (Join-Path $source "tools\extract_nup.py") $Nup --select latest --pack --out $extractTmp
+        if ($LASTEXITCODE -ne 0) { Say "extract_nup.py failed"; exit 1 }
         if (Test-Path -LiteralPath $exefsDir) { Remove-Item -Recurse -Force $exefsDir }
-        Move-Item -LiteralPath $foundExefs.FullName -Destination $exefsDir -Force
-        & $pyExe (Join-Path $source "tools\hwaoi_pack_romfs.py") --dir $foundRomfs.FullName --out $romfsDir --exefs $exefsDir
-        if ($LASTEXITCODE -ne 0) { Say "hwaoi_pack_romfs.py failed"; exit 1 }
+        if (Test-Path -LiteralPath $romfsDir) { Remove-Item -Recurse -Force $romfsDir }
+        Move-Item -LiteralPath (Join-Path $extractTmp "exefs") -Destination $exefsDir -Force
+        Move-Item -LiteralPath (Join-Path $extractTmp "romfs") -Destination $romfsDir -Force
         Remove-Item -Recurse -Force $extractTmp -ErrorAction SilentlyContinue
+        & $pyExe -c "
+import hashlib, json
+from pathlib import Path
+idx = Path(r'$romfsDir') / 'index.json'
+d = json.loads(idx.read_text(encoding='utf-8'))
+exefs = Path(r'$exefsDir')
+d['exefs_sha256'] = {f.name: hashlib.sha256(f.read_bytes()).hexdigest() for f in sorted(exefs.iterdir()) if f.is_file()}
+idx.write_text(json.dumps(d), encoding='utf-8')
+"
+        if ($LASTEXITCODE -ne 0) { Say "failed to update RomFS index.json"; exit 1 }
     }
 }
 

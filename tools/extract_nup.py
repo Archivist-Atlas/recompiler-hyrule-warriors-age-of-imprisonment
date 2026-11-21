@@ -11,8 +11,19 @@ It writes <out>\\exefs and <out>\\romfs, the folders `recomp\\gen.py --exefs` an
 The output is game data: keep it under build/. Every extracted file is checked against the SHA-256 in the container
 (--no-verify skips that), and the table of contents against the one in the superblock.
 
-By default the base package is extracted (DKB Recomp supports base 1.0.0 only). --package picks another package by
-index (see --list); --overlay-update also lays the newest update package over the base, as Eglantine's loader does.
+By default the base package is extracted. --package picks another package by index (see --list); --overlay-update
+also lays the newest update package over the base.
+
+--select latest|base extracts what Eglantine's loader (core/loader/nup.cpp, AppLoader_NUP) runs: with latest, the
+ExeFS of the newest update package (or of the base when the update has none) and the base RomFS with the update's
+RomFS laid over it (NupContainer::MergeShadowDirs); a standalone update without a base gives its own trees. base takes
+the base package alone. --pack then writes the RomFS as the romfs.bin and index.json of tools/dkb_pack_romfs.py
+straight from the container, without the loose copy; the Bananza installer extracts .nup input this way:
+
+    python tools\\extract_nup.py <game>.nup --select latest --pack --out build\\extracted\\dkb458752
+
+
+A .nx archive (NXFormat) is read the same way: every snapshot of its first application is a package, see extract_nx.py.
 
 zstd comes from `compression.zstd` (Python 3.14), the `zstandard` module, or a `zstd` program on PATH, in that order.
 Everything else is the standard library.
@@ -22,6 +33,7 @@ same format, with the same checks.
 """
 import argparse
 import hashlib
+import json
 import os
 import shutil
 import struct
@@ -41,6 +53,7 @@ NO_DIR = 0xFFFFFFFF
 CODEC_RAW, CODEC_ZSTD = 0, 1
 KINDS = {0: 'base', 1: 'update', 2: 'addon'}
 CHUNK = 4 << 20
+ALIGN = 16   # tools/dkb_pack_romfs.py
 
 META_NPDM, META_DISPLAY_VERSION, META_TITLE_NAME = 1, 4, 5
 
@@ -68,6 +81,13 @@ class Nup:
     def __init__(self, path):
         self.path = Path(path)
         self.f = open(self.path, 'rb')
+        try:
+            self._open()
+        except BaseException:
+            self.f.close()
+            raise
+
+    def _open(self):
         size = os.fstat(self.f.fileno()).st_size
         sb = self.f.read(SUPER_SIZE)
         if len(sb) < SUPER_SIZE or sb[:4] != b'NUP\x01':
@@ -163,8 +183,12 @@ class Nup:
             elif typ == META_DISPLAY_VERSION:
                 pkg.display_version = payload.decode('utf-8', 'replace')
 
-    def walk(self, dir_index, prefix=()):
-        """Yield (relative path parts, file index) for every file under a directory node."""
+    def walk(self, dir_index, prefix=(), path=()):
+        """Yield (relative path parts, file index) for every file under a directory node. `path` holds the directories
+        being visited, so a container whose directories point back at an ancestor is refused instead of recursing."""
+        if dir_index in path:
+            raise NupError('NUP directory cycle')
+        path += (dir_index,)
         _, first, n = self.dirs[dir_index]
         for slot in range(first, first + n):
             child = self.children[slot]
@@ -172,11 +196,24 @@ class Nup:
                 name = self.files[child - len(self.dirs)][0]
                 yield prefix + (safe_name(name),), child - len(self.dirs)
             else:
-                yield from self.walk(child, prefix + (safe_name(self.dirs[child][0]),))
+                yield from self.walk(child, prefix + (safe_name(self.dirs[child][0]),), path)
 
     def package_files(self, pkg, which):
         dir_index = pkg.exefs_dir if which == 'exefs' else pkg.romfs_dir
         return [] if dir_index == NO_DIR else list(self.walk(dir_index))
+
+
+def open_container(path):
+    """The Nup of a .nup, or the equivalent view of a .nx (NXFormat, tools/extract_nx.py), by the file's magic."""
+    with open(path, 'rb') as f:
+        magic = f.read(4)
+    if magic != b'NXAR':
+        return Nup(path)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('_dkb_extract_nx', Path(__file__).with_name('extract_nx.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.Nx(path, sys.modules[__name__])
 
 
 def safe_name(name):
@@ -239,11 +276,41 @@ def _read_exact(src, n):
     return data
 
 
-def extract_file(nup, zstd, idx, dest, verify):
+def file_chunks(nup, zstd, idx, verify):
+    """Yield the contents of file `idx` in chunks; after the last one, check its size and, with verify, its SHA-256.
+    A failed check raises before the generator finishes, so a caller publishes nothing it has not seen checked."""
+    if hasattr(nup, 'file_chunks'):   # an NX archive (tools/extract_nx.py) keeps files in blocks, not extents
+        yield from nup.file_chunks(zstd, idx, verify)
+        return
     name, size, ext_off, ext_size, sha, codec = nup.files[idx]
+    h = hashlib.sha256()
+    written = 0
+    if size:
+        nup.f.seek(ext_off)
+        if codec == CODEC_RAW:
+            left = size
+            while left:
+                chunk = nup.f.read(min(CHUNK, left))
+                if not chunk:
+                    raise NupError(f'{name}: the container ends inside the file')
+                left -= len(chunk)
+                h.update(chunk)
+                written += len(chunk)
+                yield chunk
+        else:
+            for chunk in zstd.stream(nup.f, ext_size):
+                h.update(chunk)
+                written += len(chunk)
+                yield chunk
+    if written != size:
+        raise NupError(f'{name}: expected {size} bytes, got {written}')
+    if verify and h.digest() != sha:
+        raise NupError(f'{name}: SHA-256 differs from the container record (corrupt container)')
+
+
+def extract_file(nup, zstd, idx, dest, verify):
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = None
-    h = hashlib.sha256()
     written = 0
     try:
         # Exclusive creation avoids existing links, stale partials and legitimate
@@ -251,27 +318,9 @@ def extract_file(nup, zstd, idx, dest, verify):
         with tempfile.NamedTemporaryFile(mode='wb', prefix='.nup-', suffix='.part',
                                          dir=dest.parent, delete=False) as out:
             tmp = Path(out.name)
-            if size:
-                nup.f.seek(ext_off)
-                if codec == CODEC_RAW:
-                    left = size
-                    while left:
-                        chunk = nup.f.read(min(CHUNK, left))
-                        if not chunk:
-                            raise NupError(f'{name}: the container ends inside the file')
-                        left -= len(chunk)
-                        h.update(chunk)
-                        out.write(chunk)
-                        written += len(chunk)
-                else:
-                    for chunk in zstd.stream(nup.f, ext_size):
-                        h.update(chunk)
-                        out.write(chunk)
-                        written += len(chunk)
-        if written != size:
-            raise NupError(f'{name}: expected {size} bytes, got {written}')
-        if verify and h.digest() != sha:
-            raise NupError(f'{name}: SHA-256 differs from the container record (corrupt container)')
+            for chunk in file_chunks(nup, zstd, idx, verify):
+                out.write(chunk)
+                written += len(chunk)
         os.replace(tmp, dest)
         return written
     finally:
@@ -279,8 +328,9 @@ def extract_file(nup, zstd, idx, dest, verify):
             tmp.unlink(missing_ok=True)
 
 
-def extract_tree(nup, zstd, pkg, which, out_dir, verify, quiet):
-    entries = nup.package_files(pkg, which)
+def extract_tree(nup, zstd, pkg, which, out_dir, verify, quiet, entries=None):
+    if entries is None:
+        entries = nup.package_files(pkg, which)
     total = sum(nup.files[i][1] for _, i in entries)
     done = 0
     skipped = 0
@@ -300,6 +350,134 @@ def extract_tree(nup, zstd, pkg, which, out_dir, verify, quiet):
             rate = done / max(time.time() - t0, 1e-6) / 1e6
             print(f'  {which}: {n}/{len(entries)} files, {done / 1e9:.2f} of {total / 1e9:.2f} GB ({rate:.0f} MB/s)')
     return len(entries), total, skipped
+
+
+def merged_entries(nup, packages, which):
+    """(path parts, file index) of the tree `which` of each package in turn, every later package laid over the earlier
+    ones as Eglantine's NupContainer::MergeShadowDirs does: a file replaces the file at the same path, folders merge.
+    Sorted by the UTF-8 bytes of the path, the order tools/dkb_pack_romfs.py packs in. A path that is a file in one
+    package and a folder in another has no single meaning, so it is refused."""
+    merged = {}
+    for pkg in packages:
+        for parts, idx in nup.package_files(pkg, which):
+            merged[parts] = idx
+    folders = {parts[:i] for parts in merged for i in range(1, len(parts))}
+    clash = sorted(folders & merged.keys())
+    if clash:
+        raise NupError(f'{"/".join(clash[0])} is a file in one package and a folder in another')
+    return sorted(merged.items(), key=lambda e: '/'.join(e[0]).encode())
+
+
+def install_plan(nup, select='latest'):
+    """The packages whose trees make the program, as Eglantine's AppLoader_NUP picks them: a dict with 'exefs' (the
+    package whose ExeFS is used whole), 'romfs' (the packages whose RomFS trees are laid over each other, base first)
+    and 'update' (the update package taken, or None). select is 'latest' or 'base'."""
+    if select not in ('latest', 'base'):
+        raise NupError(f'--select takes latest or base, not {select!r}')
+    base = next((p for p in nup.packages if p.kind == 0), None)
+    updates = [p for p in nup.packages if p.kind == 1]
+    update = max(updates, key=lambda p: p.version) if updates and select == 'latest' else None
+    if base is not None and base.exefs_dir != NO_DIR:
+        exefs = update if update is not None and update.exefs_dir != NO_DIR else base
+        romfs = [p for p in (base, update) if p is not None and p.romfs_dir != NO_DIR]
+    elif update is not None and update.exefs_dir != NO_DIR:
+        exefs, romfs = update, [update] if update.romfs_dir != NO_DIR else []   # a standalone update
+    else:
+        raise NupError('no base package with an ExeFS in the container' if select == 'base' else
+                       'no package with an ExeFS in the container (see --list)')
+    return {'exefs': exefs, 'romfs': romfs, 'update': update}
+
+
+AOC_BASE = 0x1000   # the first add-on content's title id is the application id plus this
+AOC_MAX = 32        # runtime/aoc_romfs.c looks at aoc-0 .. aoc-31
+
+
+def aoc_packs(nup):
+    """(index, package) of each add-on content package that has a RomFS: the index is the title id minus the
+    application id plus AOC_BASE, the number runtime/aoc_romfs.c finds as aoc-<index>. The application id is the base
+    (or update) package's title id with the low 12 bits cleared. Packages outside 0..AOC_MAX-1, and any container
+    without a program package, give nothing. When two packages share an index the higher version wins."""
+    program = next((p for p in nup.packages if p.kind in (0, 1)), None)
+    if program is None:
+        return []
+    first = (program.title_id & ~0xFFF) + AOC_BASE
+    best = {}
+    for pkg in nup.packages:
+        index = pkg.title_id - first
+        if pkg.kind == 2 and pkg.romfs_dir != NO_DIR and 0 <= index < AOC_MAX:
+            if index not in best or pkg.version > best[index].version:
+                best[index] = pkg
+    return sorted(best.items())
+
+
+def write_aoc(nup, zstd, out_dir, verify, quiet):
+    """Pack each add-on content's RomFS into out_dir/aoc-<index>/romfs.bin plus aoc-index.bin (the TOTKRFS1 index of
+    tools/romfs_index.py), the folders runtime/aoc_romfs.c reads. A package that fails is reported and skipped; it
+    never fails the extraction. Returns the number written."""
+    import romfs_index
+    written = 0
+    for index, pkg in aoc_packs(nup):
+        folder = out_dir / f'aoc-{index}'
+        try:
+            count, _ = pack_romfs(nup, zstd, merged_entries(nup, [pkg], 'romfs'), folder, verify, True)
+            (folder / 'aoc-index.bin').write_bytes(
+                romfs_index.build_index(json.loads((folder / 'index.json').read_text(encoding='utf-8'))))
+            print(f'aoc: index {index}: {count} files')
+            written += 1
+        except (NupError, OSError, SystemExit, ValueError) as e:
+            print(f'warning: add-on content {index} skipped: {e}', file=sys.stderr)
+            shutil.rmtree(folder, ignore_errors=True)
+    return written
+
+
+def packed_entries(entries):
+    """The entries tools/dkb_pack_romfs.py would pack from the same loose tree: it skips files whose name starts with
+    a dot (the .listing files dump tools leave)."""
+    return [(parts, idx) for parts, idx in entries if not parts[-1].startswith('.')]
+
+
+def pack_romfs(nup, zstd, entries, out_dir, verify, quiet):
+    """Write out_dir/romfs.bin and index.json in the layout of tools/dkb_pack_romfs.py (files in path order, each
+    aligned to 16 bytes) straight from the container: the same image a loose extraction packed would give, without
+    the 19 GB loose copy. The image goes to romfs.bin.part and is renamed once every file passed its checks; the index
+    is written last, so a folder with an index.json holds a whole image."""
+    entries = packed_entries(entries)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    image, index = out_dir / 'romfs.bin', out_dir / 'index.json'
+    index.unlink(missing_ok=True)
+    part = out_dir / 'romfs.bin.part'
+    total = sum(nup.files[i][1] for _, i in entries)
+    sha = hashlib.sha256()
+    files, off, t0 = [], 0, time.time()
+    try:
+        with open(part, 'wb') as dst:
+            for n, (parts, idx) in enumerate(entries, 1):
+                pad = -off % ALIGN
+                if pad:
+                    dst.write(b'\0' * pad)
+                    sha.update(b'\0' * pad)
+                    off += pad
+                size = 0
+                for chunk in file_chunks(nup, zstd, idx, verify):
+                    dst.write(chunk)
+                    sha.update(chunk)
+                    size += len(chunk)
+                files.append({'path': '/'.join(parts), 'offset': off, 'size': size})
+                off += size
+                if not quiet and (n % 2000 == 0 or n == len(entries)):
+                    rate = off / max(time.time() - t0, 1e-6) / 1e6
+                    print(f'  romfs: {n}/{len(entries)} files, {off / 1e9:.2f} of {total / 1e9:.2f} GB '
+                          f'({rate:.0f} MB/s)', flush=True)
+        os.replace(part, image)
+    finally:
+        part.unlink(missing_ok=True)
+    # 'pass' as tools/dkb_pack_romfs.py writes it: the image is whole and its SHA-256 recorded. 'source' says what the
+    # files were checked against: the container's per-file SHA-256 records, not an NCA hash tree.
+    source = ('packed from a NUP container; every file checked against its SHA-256 record' if verify else
+              'packed from a NUP container; file SHA-256 records not checked')
+    manifest = {'status': 'pass', 'source': source, 'romfs_size': off, 'romfs_sha256': sha.hexdigest(), 'files': files}
+    index.write_text(json.dumps(manifest), encoding='utf-8')
+    return len(files), off
 
 
 def _hash(path):
@@ -344,24 +522,64 @@ def pick(nup, which):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('nup', type=Path, help='the .nup file')
+    ap.add_argument('nup', type=Path, nargs='?', help='the .nup file (or a .nx: tools/extract_nx.py)')
     ap.add_argument('--out', type=Path, help='output folder: <out>\\exefs and <out>\\romfs are written')
     ap.add_argument('--list', action='store_true', help='list the packages and exit')
     ap.add_argument('--package', default='base', help='base (default), update, or an index from --list')
     ap.add_argument('--overlay-update', action='store_true',
                     help='after the chosen package, extract the newest update package over it')
     ap.add_argument('--only', choices=('exefs', 'romfs'), help='extract just one of the two folders')
+    ap.add_argument('--select', choices=('latest', 'base'),
+                    help="what Eglantine runs: latest (the newest update's ExeFS, base RomFS with the update's laid "
+                         "over it) or base; replaces --package and --overlay-update")
+    ap.add_argument('--pack', action='store_true',
+                    help='write the RomFS as <out>\\romfs\\romfs.bin and index.json (tools/dkb_pack_romfs.py layout) '
+                         'instead of loose files')
+    ap.add_argument('--aoc', action='store_true',
+                    help='with --select, also pack each add-on content package as <out>\aoc\aoc-<index>\romfs.bin '
+                         'and aoc-index.bin')
+    ap.add_argument('--check-zstd', action='store_true',
+                    help='exit 0 when a zstd backend is available, 1 otherwise, and do nothing else')
     ap.add_argument('--no-verify', action='store_true', help='skip the per-file SHA-256 check')
     ap.add_argument('--quiet', action='store_true')
     args = ap.parse_args(argv)
+    if args.check_zstd:
+        kind = Zstd().kind
+        print(kind or 'no zstd backend')
+        return 0 if kind else 1
+    if args.nup is None:
+        ap.error('the .nup file is required')
+    if args.pack and not args.select:
+        ap.error('--pack needs --select')
+    if args.aoc and not args.select:
+        ap.error('--aoc needs --select')
     try:
-        nup = Nup(args.nup)
+        nup = open_container(args.nup)
         if args.list or args.out is None:
             list_packages(nup)
             if not args.list:
                 print('\nGive --out <folder> to extract.')
             return 0
         zstd = Zstd()
+        if args.select:
+            plan = install_plan(nup, args.select)
+            trees = (args.only,) if args.only else ('exefs', 'romfs')
+            for which in trees:
+                pkgs = [plan['exefs']] if which == 'exefs' else plan['romfs']
+                names = '+'.join(f'[{p.index}] {p.kind_name} {p.display_version or p.version}' for p in pkgs) or 'none'
+                print(f'{which}: package {names} to {args.out}')
+                entries = merged_entries(nup, pkgs, which)
+                if which == 'romfs' and args.pack:
+                    count, total = pack_romfs(nup, zstd, entries, args.out / 'romfs', not args.no_verify, args.quiet)
+                    print(f'  romfs: {count} files packed, {total / 1e9:.2f} GB')
+                else:
+                    count, total, skipped = extract_tree(nup, zstd, None, which, args.out / which,
+                                                         not args.no_verify, args.quiet, entries)
+                    print(f'  {which}: {count} files, {total / 1e9:.2f} GB'
+                          f'{f" ({skipped} already there)" if skipped else ""}')
+            if args.aoc:
+                write_aoc(nup, zstd, args.out / 'aoc', not args.no_verify, args.quiet)
+            return 0
         packages = [pick(nup, args.package)]
         if args.overlay_update:
             packages.append(pick(nup, 'update'))

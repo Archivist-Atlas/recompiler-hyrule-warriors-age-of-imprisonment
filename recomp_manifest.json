@@ -1,0 +1,19 @@
+{
+  "id": "hyrule-warriors-age-of-imprisonment",
+  "name": "Hyrule Warriors: Age of Imprisonment",
+  "recompiler_name": "HWAoI Recomp (Alano6678/hwaoi-recomp)",
+  "title_ids": [
+    "04003F40232DE000",
+    "04003F40232DE800"
+  ],
+  "supported_versions": [
+    0,
+    196608
+  ],
+  "default_output_subdir": "Hyrule Warriors Age of Imprisonment",
+  "shortcut_name": "Hyrule Warriors Age of Imprisonment",
+  "windows_entrypoint": "install.ps1",
+  "script": "install.ps1",
+  "icon": "game_icon.ico",
+  "description": "Recompile Hyrule Warriors: Age of Imprisonment (Nintendo Switch 2, depuis votre .nup ou dossier exefs/romfs) en exécutable Windows PC natif (Vulkan, mode fenêtré 720p par défaut, plein écran via F11, Échap pour quitter)."
+}

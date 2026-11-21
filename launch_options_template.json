@@ -1,0 +1,62 @@
+{
+  "game_name": "Hyrule Warriors: Age of Imprisonment",
+  "version": "1.0.0 (PC Recomp)",
+  "icon": "game_icon.ico",
+  "icon_png": "game_icon.png",
+  "rom_env_var": "HWAOI_RECOMP_NUP",
+  "working_dir": ".",
+  "command": [
+    "hwaoi.exe"
+  ],
+  "options": [
+    {
+      "id": "fullscreen",
+      "category": "Affichage & Audio",
+      "env_var": "TOTK_FULLSCREEN",
+      "on_value": "1",
+      "off_value": "0",
+      "label": "Mode Plein Écran au démarrage (F11 pour basculer)",
+      "description": "Désactivé par défaut (fenêtré 720p). En jeu, appuyez sur F11 à tout moment pour basculer en plein écran, et Échap pour quitter.",
+      "default": false
+    },
+    {
+      "id": "fps60",
+      "category": "Affichage & Audio",
+      "env_var": "TOTK_FPS60",
+      "on_value": "1",
+      "off_value": "0",
+      "label": "Débloquer 60 FPS",
+      "description": "Active la cible 60 FPS au lieu de la limite par défaut.",
+      "default": false
+    },
+    {
+      "id": "framegen",
+      "category": "Affichage & Audio",
+      "env_var": "TOTK_FRAME_GEN",
+      "on_value": "1",
+      "off_value": "0",
+      "label": "Génération de frames (Frame Generation)",
+      "description": "Génère des images intermédiaires pour fluidifier l'affichage.",
+      "default": false
+    },
+    {
+      "id": "console",
+      "category": "Système & Avancé",
+      "env_var": "TOTK_CONSOLE",
+      "on_value": "1",
+      "off_value": "0",
+      "label": "Afficher la console de diagnostic",
+      "description": "Affiche la fenêtre console de logs en arrière-plan au démarrage.",
+      "default": false
+    }
+  ],
+  "env": {
+    "TOTK_FULLSCREEN": "0",
+    "TOTK_WINDOW_MODE": "windowed",
+    "TOTK_WINDOW_SIZE": "1280x720"
+  },
+  "expected_title_ids": [
+    "04003F40232DE000",
+    "04003F40232DE800"
+  ]
+}
